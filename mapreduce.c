@@ -19,7 +19,6 @@ int main(int argc, char *argv[])
 {
     processFlags(argc, argv);
 
-
     printf("Task size: %ld \n", TASK_SIZE);
     printf("Input path: %s\n", INPUT_PATH);
     printf("Output path: %s\n", OUTPUT_PATH);
@@ -67,23 +66,20 @@ int calculateDestRank(char *word, int length, int num_ranks)
 -other parameters
 */
 int processFlags(int argc, char *argv[]) {
-    // for(size_t i = 1; i < argc; i++) {
-    //     printf("%s\n", argv[i]);
-    //     if(strncmp(argv[i], "-n", 2)) {
-    //         i++;
-    //         char *eptr;
-    //         TASK_SIZE = strtol(argv[i], &eptr, 10);
-    //     }
-    //     else if(strncmp(argv[i], "-i", 3)) {
-    //         printf("wwwww");
-    //         i++;
-    //         printf("%s\n", argv[i]);
-    //         strcpy(INPUT_PATH, argv[i]);
-    //     }
-    //     else if(strncmp(argv[i], "-o", 2)) {
-    //         i++;
-    //         strcpy(OUTPUT_PATH, argv[i]);
-    //     }
-    // }
+    for(size_t i = 1; i < argc; i++) {
+        if(strncmp(argv[i], "-n", 2) == 0) {
+            i++;
+            char *eptr;
+            TASK_SIZE = strtol(argv[i], &eptr, 10);
+        }
+        else if(strncmp(argv[i], "-i", 3) == 0) {
+            i++;
+            strcpy(INPUT_PATH, argv[i]);
+        }
+        else if(strncmp(argv[i], "-o", 2) == 0) {
+            i++;
+            strcpy(OUTPUT_PATH, argv[i]);
+        }
+    }
     return 1;
 }
