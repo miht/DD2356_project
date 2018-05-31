@@ -2,13 +2,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <mpi.h>
 
 #define SEED_LENGTH 65
 
 const char key_seed[SEED_LENGTH] = "b4967483cf3fa84a3a233208c129471ebc49bdd3176c8fb7a2c50720eb349461";
 const unsigned short *key_seed_num = (unsigned short*)key_seed;
 
-long TASK_SIZE = 64000000;
+long TASK_SIZE = 256;
 char INPUT_PATH[128] = "res/wikipedia_test_small.txt";
 char OUTPUT_PATH[128] = "output/results.csv";
 
@@ -17,19 +18,87 @@ int processFlags(int argc, char *argv[]);
 
 int main(int argc, char *argv[])
 {
-    processFlags(argc, argv);
+    MPI_Init(&argc, &argv);
 
-    printf("Task size: %ld \n", TASK_SIZE);
-    printf("Input path: %s\n", INPUT_PATH);
-    printf("Output path: %s\n", OUTPUT_PATH);
+    int rank;
+    int num_ranks;
+    int iterations;
 
-    /**
-    MASTER:
-        -Open file, split and assign (num_ranks - 1) blocks of 64 MB to slaves
-        -Do slave work during reduce phase
-        -Retrieve aggregated data from slave processes and write to file
-    */
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
 
+    if(rank == 0){
+        // Process flags
+        processFlags(argc, argv);
+
+        printf("Task size: %ld \n", TASK_SIZE);
+        printf("Input path: %s\n", INPUT_PATH);
+        printf("Output path: %s\n", OUTPUT_PATH);
+
+        /**
+            MASTER:
+            -Open file, split and assign (num_ranks - 1) blocks of 64 MB to slaves
+            -Do slave work during reduce phase
+            -Retrieve aggregated data from slave processes and write to file
+        */
+
+        MPI_File file;
+        MPI_File_open(MPI_COMM_SELF, INPUT_PATH, 
+            MPI_MODE_RDONLY, MPI_INFO_NULL, &file);
+
+        if(file == MPI_FILE_NULL){
+            printf("File does not exist.\n");
+            MPI_Finalize();
+            exit(0);
+        }
+
+        //Checking file_size
+        MPI_Offset file_size;
+        MPI_File_get_size(file, &file_size);
+
+        // Broadcast #iterations send/receives required to process the input data
+        iterations = file_size / (num_ranks * TASK_SIZE);
+        MPI_Bcast(&iterations, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        // Start sending data
+        int offset = 0;
+        for (int i; i < iterations; i++){
+            for(int thread = 1; thread < num_ranks; thread++){
+                //READ DATA
+                char *buf = malloc(TASK_SIZE * sizeof(char));
+                MPI_File_seek(file, offset, MPI_SEEK_SET);
+                MPI_File_read(file, buf, TASK_SIZE, MPI_CHAR, MPI_STATUS_IGNORE);
+
+                //SEND DATA
+                MPI_Request request;
+                MPI_Isend(&buf, TASK_SIZE, MPI_CHAR, thread, 0,
+                  MPI_COMM_WORLD, &request);
+                
+                //WAIT
+                MPI_Wait(&request, MPI_STATUS_IGNORE);
+                //printf("Sent to process %d: \n%s\n", i, buf);
+                
+                offset += TASK_SIZE;
+                free(buf);
+            }            
+        }
+    }
+
+    if(rank > 0){
+        
+        MPI_Bcast(&iterations, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        //printf("Rank %d says %d iterations\n", rank, iterations);
+        
+        for(int i = 0; i < iterations; i++){
+            char *buf = malloc(TASK_SIZE * sizeof(char));
+
+            MPI_Recv(&buf, TASK_SIZE, MPI_CHAR, 0, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            //printf("hello");
+            //printf("%s\n", buf);
+        }
+    }
     /**
     SLAVE:
         -Retrieve 64 MB chunk from master
@@ -41,7 +110,10 @@ int main(int argc, char *argv[])
          the result by calling reduce() repeatedly.
     */
 
-   return 0;
+    printf("rank %d says hello\n", rank);
+
+    MPI_Finalize();
+    return 0;
 }
 
 int calculateDestRank(char *word, int length, int num_ranks)
@@ -60,8 +132,8 @@ int calculateDestRank(char *word, int length, int num_ranks)
 }
 
 /** Set parameters using flags
--task size  -t n
--input file -p path
+-task size  -n size
+-input file -i path
 -output file -o path
 -other parameters
 */
