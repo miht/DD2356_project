@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <mpi.h>
-#include <ctype.h>
 
 #define SEED_LENGTH 65
 
@@ -19,26 +18,13 @@ char OUTPUT_PATH[128] = "output/results.csv";
 int calculateDestRank(char *word, int length, int num_ranks);
 int processFlags(int argc, char *argv[]);
 
-struct KVPair {
-  char *key;
-  int value;
-};
-
-int Map(char* buf, int len, struct KVPair *pair, int *offset);
-
 int main(int argc, char *argv[])
 {
     MPI_Init(&argc, &argv);
 
-    // Process flags
-    processFlags(argc, argv);
-
     int rank;
     int num_ranks;
     int iterations;
-
-    int *sizes;
-    int *displacements;
 
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
@@ -48,12 +34,19 @@ int main(int argc, char *argv[])
     MPI_File file;
 
     if(rank == 0){
-      /**
-          MASTER:
-          -Open file, split and assign (num_ranks - 1) blocks of 64 MB to slaves
-          -Do slave work during reduce phase
-          -Retrieve aggregated data from slave processes and write to file
-      */
+        // Process flags
+        processFlags(argc, argv);
+
+        printf("Task size: %ld \n", TASK_SIZE);
+        printf("Input path: %s\n", INPUT_PATH);
+        printf("Output path: %s\n", OUTPUT_PATH);
+
+        /**
+            MASTER:
+            -Open file, split and assign (num_ranks - 1) blocks of 64 MB to slaves
+            -Do slave work during reduce phase
+            -Retrieve aggregated data from slave processes and write to file
+        */
 
         MPI_File_open(MPI_COMM_SELF, INPUT_PATH,
             MPI_MODE_RDONLY, MPI_INFO_NULL, &file);
@@ -74,63 +67,86 @@ int main(int argc, char *argv[])
         //The size of the remaining chunk
         int remainder = (int) file_size % (TASK_SIZE * (num_ranks - 1));
         int chunks_per_task = (file_size - remainder) / ((num_ranks - 1)*TASK_SIZE);
-        printf("CPT %d\n", chunks_per_task);
-
         data_size_per_process = chunks_per_task*TASK_SIZE;
+        printf("CPT %d\n", chunks_per_task);
         printf("DSPP %d\n", data_size_per_process);
 
-        //prepare variable arrays for call to MPI_Scatterv()
-        sizes = (int*) calloc(num_ranks, sizeof(int));
-        displacements = (int*) calloc(num_ranks, sizeof(int));
-
-        //Sizes be like {0, 256, 256, 256, 256.....}; master won't receive any
-        //displacements be like {256, }
-        for(int i = 1; i < num_ranks; i++) {
-          sizes[i] = TASK_SIZE;
-          displacements[i] = (i- 1)*TASK_SIZE;
-        }
       }
-      // MPI_Bcast(&data_per_process, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        // MPI_Bcast(&data_per_process, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
       //Broadcast the size of the data set per process
       MPI_Bcast(&data_size_per_process, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
       //Initialize the sizes and displacements arrays
 
+      int *sizes = (int*) calloc(num_ranks, sizeof(int));
+      int *displacements = (int*) calloc(num_ranks, sizeof(int));
+
+      for(int i = 1; i < num_ranks; i++) {
+        sizes[i] = TASK_SIZE;
+        displacements[i] = i*TASK_SIZE;
+      }
+
       while(data_size_per_process > 0) {
-        char* buf;
+        char* send_buf;
+        char* recv_buf;
 
         if(rank == 0) {
-          buf =  (char*) calloc((num_ranks - 1) * TASK_SIZE, sizeof(char));
+          send_buf = calloc((num_ranks - 1) * TASK_SIZE, sizeof(char));
           MPI_File_seek(file, 0, MPI_SEEK_CUR);
-          MPI_File_read(file, buf, (num_ranks - 1)*TASK_SIZE, MPI_CHAR, MPI_STATUS_IGNORE);
+          MPI_File_read(file, send_buf, (num_ranks - 1)*TASK_SIZE, MPI_CHAR, MPI_STATUS_IGNORE);
 
           printf("[Master ] Read %d bytes of data.\n", rank, (num_ranks - 1) * TASK_SIZE);
         }
         else {
-           buf = (char*) calloc(TASK_SIZE, sizeof(char));
+           recv_buf = calloc(TASK_SIZE, sizeof(char));
         }
 
-        MPI_Scatterv(buf, sizes, displacements, MPI_CHAR, buf, TASK_SIZE, MPI_CHAR, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(send_buf, sizes, displacements, MPI_CHAR, recv_buf, TASK_SIZE, MPI_CHAR, 0, MPI_COMM_WORLD);
 
         if(rank != 0) {
-          printf("[Slave %d] Received chunk of size: %d\n", rank, TASK_SIZE);
-          // printf("[Slave %d] Has chunk %s: \n", rank, buf);
-
-          struct KVPair pair;
-          pair.key = (char*) calloc(15, sizeof(char));
-          int offset = 0;
-          // printf("%s\n", buf);
-          Map(buf, TASK_SIZE, &pair, &offset);
-          printf("[Slave %d] Generated key-value pair <%s:%d>.\n", rank, pair.key, pair.value);
-
-          free(pair.key);
-
+          printf("[Slave %d] Received chunk:\n%s\n", rank, recv_buf);
         }
 
-        free(buf);
+        if(rank != 0) {
+          free(recv_buf);
+
+        }
+        else {
+          free(send_buf);
+
+        }
         data_size_per_process -= TASK_SIZE;
       }
+
+        // Start sending data
+          //READ DATA
+
+            // printf("[Master] Preparing to send to rank %d.\n", i);
+
+
+            MPI_Offset file_offset;
+            // while(file_offset < file_size) {
+            //   char *buf = calloc(TASK_SIZE, sizeof(MPI_CHAR));
+            //
+            //   MPI_File_seek(file, file_offset, MPI_SEEK_CUR);
+            //   MPI_File_read(file, buf, TASK_SIZE*(num_ranks - 1), MPI_CHAR, MPI_STATUS_IGNORE);
+            //
+            //   free(buf);
+            // }
+
+      // int workload_size;
+      // MPI_Bcast(&workload_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
+      // printf("[Slave %d] Designated workload size: %d.\n", rank, workload_size);
+      //
+      // while(workload_size > 0) {
+      //   char* buf = calloc(TASK_SIZE, sizeof(char));
+      //   MPI_Recv(buf, TASK_SIZE, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      //   free(buf);
+      //
+      //   workload -= TASK_SIZE;
+      // }
 
     /**
     SLAVE:
@@ -187,52 +203,4 @@ int processFlags(int argc, char *argv[]) {
         }
     }
     return 1;
-}
-
-
-int Map(char* buf, int len, struct KVPair *pair, int *offset) {
-  //Eat up all the numbers in the front
-  // printf("buf[0] = %c\n", buf[*offset]);
-  //
-  // printf("IS ALPHA? %d\n", isalpha(buf[*offset]));
-  // printf("IS DIGIT? %d\n", isdigit(buf[*offset]));
-
-  while(!isalpha(buf[*offset]) && !isdigit(buf[*offset])) {
-     ++*offset;
-     if(*offset >= len) return 0;
-  }
-
-  int max_word_len = sizeof(pair->key);
-  printf("WORD LEN %d\n", max_word_len);
-  int word_len = 0;
-  // printf("********%c BEBEBBEBBE\n", buf[*offset]);
-
-  if(isalpha(buf[*offset])) {
-    while(isalpha(buf[*offset])) {
-      // printf("buf[%d] = %c\n", *offset, buf[*offset]);
-      pair->key[word_len] = buf[*offset];
-      word_len ++;
-      ++*offset;
-      if(word_len > max_word_len) {
-        break;
-      }
-    }
-  }
-  else if(isdigit(buf[*offset])) {
-    while(isdigit(buf[*offset])) {
-      pair->key[word_len] = buf[*offset];
-      word_len ++;
-      ++*offset;
-      if(word_len > max_word_len) {
-        break;
-      }
-    }
-  }
-
-  // printf("%s\n", pair->key);
-  // sprintf(pair->key, "%.*s", word_len, buf - word_len);
-  // pair->key[]
-  pair->value = 1;
-
-  return 1;
 }
