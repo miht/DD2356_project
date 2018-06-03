@@ -22,12 +22,12 @@ char OUTPUT_PATH[128] = "output/results.csv";
 int calculateDestRank(char *word, int length, int num_ranks);
 int processFlags(int argc, char *argv[]);
 
-struct KeyValue {
+typedef struct KeyValue {
   char word[15];
   int64_t count;
-};
+} keyvalue;
 
-int Map(char* buf, int len, struct KeyValue *pair, int *offset, int *word_len);
+int Map(char* buf, int len, KeyValue *pair, int *offset, int *word_len);
 
 int main(int argc, char *argv[])
 {
@@ -64,8 +64,9 @@ int main(int argc, char *argv[])
 
         if(file == MPI_FILE_NULL){
             printf("File does not exist.\n");
-            MPI_Finalize();
-            exit(0);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+            // MPI_Finalize();
+            // exit(0);
         }
         else {
           printf("File opened!");
@@ -132,46 +133,121 @@ int main(int argc, char *argv[])
 
           int offset = 0;
           while(offset < TASK_SIZE) {
-            struct KeyValue *pair;
+            KeyValue *pair;
             // pair = calloc(1, sizeof(pair));
             pair = new KeyValue();
             // pair.word = (char*) calloc(KeyValue_word_LENGTH, sizeof(char));
             // printf("%s\n", buf);
             int word_len = 0;
             int read = Map(buf, TASK_SIZE, pair, &offset, &word_len);
-            // printf("[Slave %d] Generated word-count pair <%s:%d>.\n", rank, pair->word, (int) pair->count);
-            //
-            // printf("[Slave %d] Read %d bytes from buffer.\n", rank, read);
 
             //if word len
             if(word_len > 0) {
               int destination_rank = calculateDestRank(pair->word, word_len, num_ranks);
               // std::cout << pair->word << "\n"
               std::string key(pair->word);
-              // std::cout << "KEY " << key << "\n";
-              // if(bucket[destination_rank].count(key) < 1) {
-              //   bucket[destination_rank].insert(std::pair<std::string, int64_t> (key, 0));
-              // }
-              // std::cout << bucket[destination_rank].count(pair->word) << "\n";
-
-              // bucket.at(destination_rank).at(key) ++;
+              // if(bucket[destination_rank].count(key) < 1) bucket[destination_rank].insert(std::make_pair<std::string, int64_t>(key, 0));
               bucket[destination_rank][key] ++;
-              // bucket[destination_rank][pair->word] += 1;
-              // std::cout << bucket[destination_rank].
             }
-            delete pair;
+            free(pair);
           }
         }
-
-        delete buf;
+        free(buf);
         data_size_per_process -= TASK_SIZE;
       }
-      //
-      // for(std::map<std::string, int64_t>::iterator iter = bucket[0].begin(); iter != bucket[0].end(); ++iter) {
-      //     // printf("[Slave %d] Word: %s Count %li\n", rank, iter->first, iter->second);
-      //     printf("[Slave %d] ", rank);
-      //     std::cout << " Word " << iter->first << ", Count " <<iter->second << "\n";
+
+      //Create MPI datatype for KeyValue redistribution
+      MPI_Datatype MPI_KeyValue;
+      const int number_of_items = 2;
+      int b_lengths[2] = {15, 1};
+      MPI_Datatype types[2] = {MPI_CHAR, MPI_INT};
+      MPI_Aint displacementadores[2] = {offsetof(keyvalue, word), offsetof(keyvalue, count)};
+
+      MPI_Type_create_struct(number_of_items, b_lengths, displacementadores, types, &MPI_KeyValue);
+      MPI_Type_commit(&MPI_KeyValue);
+
+      //Array of displacements and sizes for call to alltoallv
+      int *s_redistr_sizes =  new int[num_ranks]();
+      int *r_redistr_sizes =  new int[num_ranks]();
+      int *s_redistr_displs = new int[num_ranks]();
+      int *r_redistr_displs = new int[num_ranks]();
+
+      int num_keyvalues_tot = 0;
+      //initialize redistributions and sizes
+      // if(rank != 0) {
+        for(int i = 0; i < num_ranks; i++) {
+          s_redistr_sizes[i] = bucket[i].size();
+          s_redistr_displs[i] = num_keyvalues_tot;
+          num_keyvalues_tot += bucket[i].size();
+        }
       // }
+
+      // std::cout << s_redistr_sizes << "\n";
+
+      MPI_Alltoall(s_redistr_sizes, 1, MPI_INT, r_redistr_sizes, 1, MPI_INT, MPI_COMM_WORLD);
+      //MPI_Alltoall(s_redistr_displs, 1, MPI_INT, r_redistr_displs, 1, MPI_INT, MPI_COMM_WORLD);
+
+      r_redistr_displs[0] = 0;
+      for(int i = 1; i < num_ranks; i++){
+        r_redistr_displs[i] = r_redistr_sizes[i-1] + r_redistr_displs[i-1];
+      }
+
+      // for(int i = 0; i < num_ranks; i++) {
+      //   // printf("[Rank %d] ******* BALLE %d*********\n", rank, r_redistr_sizes[i]);
+      //   printf("[Rank %d] ******* BALLE %d*********\n", rank, r_redistr_sizes[i]);
+      //   printf("[Rank %d] ******* BALLE %d*********\n", rank, r_redistr_displs[i]);
+      // }
+
+      //Array containing the actual keyvalues
+      // KeyValue s_keyvalues[num_keyvalues_tot];
+      KeyValue *s_keyvalues = new KeyValue[num_keyvalues_tot]();
+      //increment variable for adding keyvalues
+      int sub_index = 0;
+      for(int i = 0; i < num_ranks; i++) {
+
+        for(std::map<std::string, int64_t>::iterator iter = bucket[i].begin(); iter != bucket[i].end(); ++iter) {
+          KeyValue val;
+          // val.word = iter->first.c_str();
+          strcpy(val.word, iter->first.c_str());
+          val.count = iter->second;
+          s_keyvalues[sub_index] = val;
+          sub_index++;
+          // std::cout << "DOH " << val.word << ", "<< val.count << "\n";
+        }
+      }
+
+      // std::cout << "num_keyvalues_tot " << num_keyvalues_tot << ", sub_index " << sub_index << "\n";
+
+      //calculate how much data this process will receive in total
+      int size_tot = 0;
+      for(int i = 0; i < num_ranks; i++) {
+        size_tot += r_redistr_sizes[i];
+      }
+
+      std::cout << "size_tot" << size_tot << "\n";
+
+      KeyValue *r_keyvalues = new KeyValue[size_tot]();
+
+      MPI_Alltoallv(s_keyvalues, s_redistr_sizes, s_redistr_displs,
+        MPI_KeyValue, r_keyvalues, r_redistr_sizes, r_redistr_displs,
+        MPI_KeyValue, MPI_COMM_WORLD);
+      //Alltoallv
+
+      // std::cout << "Testing (___)|||||||||||||||||||||||||||||||D \n";
+
+      //REDUCE
+        for(int i = 0; i < size_tot; i++) {
+          std::cout << "Slave " << rank << " received " << r_keyvalues[i].word << ", count " << r_keyvalues[i].count << "\n";
+        }
+
+
+
+      //TODO check out
+      free(s_keyvalues);
+
+
+      //TODO check out
+      free(r_keyvalues);
 
     /**
     SLAVE:
@@ -186,22 +262,27 @@ int main(int argc, char *argv[])
 
     printf("[Slave %d] Exiting.\n", rank);
 
+    free(s_redistr_sizes);
+    free(r_redistr_sizes);
+    free(s_redistr_displs);
+    free(r_redistr_displs);
+
     if(rank == 0) {
-      delete sizes;
-      delete displacements;
+      free(sizes);
+      free(displacements);
     }
     else {
-      for(int i = 0; i < num_ranks; i++) {
-        for(std::map<std::string, int64_t>::iterator iter = bucket[i].begin(); iter != bucket[i].end(); ++iter) {
-            printf("[Slave %d]", rank);
-            std::cout << " Word " << iter->first << ", Count " <<iter->second << "\n";
-        }
 
-        // for(int j = 0; j < bucket[i].size(); j++) {
-        //   printf("[Slave %d] Word: %s Count %li\n", rank, bucket[i][j]);
-        // }
-      }
+      // free(s_keyvalues;
+      // for(int i = 0; i < num_ranks; i++) {
+      //   for(std::map<std::string, int64_t>::iterator iter = bucket[i].begin(); iter != bucket[i].end(); ++iter) {
+      //       printf("[Slave %d]", rank);
+      //       std::cout << " Word " << iter->first << ", Count " <<iter->second << "\n";
+      //   }
+      // }
     }
+
+    // free(r_keyvalues;
 
 
     MPI_Finalize();
@@ -249,7 +330,7 @@ int processFlags(int argc, char *argv[]) {
 }
 
 
-int Map(char* buf, int len, struct KeyValue *pair, int *offset, int *word_len) {
+int Map(char* buf, int len, KeyValue *pair, int *offset, int *word_len) {
   //Eat up all the numbers in the front
   // printf("buf[0] = %c\n", buf[*offset]);
   //
@@ -294,4 +375,10 @@ int Map(char* buf, int len, struct KeyValue *pair, int *offset, int *word_len) {
 
   pair->word[max_word_len - 1] = '\0';
   return *offset - offset_start;
+}
+
+int Reduce(KeyValue *k1, KeyValue *k2) {
+
+  k1->count += k2->count;
+  return 1;
 }
