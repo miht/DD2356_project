@@ -24,7 +24,7 @@ int processFlags(int argc, char *argv[]);
 
 typedef struct KeyValue {
   char word[15];
-  int64_t count;
+  int count;
 } keyvalue;
 
 int Map(char* buf, int len, KeyValue *pair, int *offset, int *word_len);
@@ -91,7 +91,7 @@ int main(int argc, char *argv[])
       MPI_Bcast(&data_size_per_process, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
       //Initialize the sizes and displacements arrays
-      std::vector<std::map<std::string, int64_t> > bucket(num_ranks);
+      std::vector<std::map<std::string, int> > bucket(num_ranks);
 
       while(data_size_per_process > 0) {
         char* buf;
@@ -169,7 +169,7 @@ int main(int argc, char *argv[])
       KeyValue *s_keyvalues = new KeyValue[num_keyvalues_tot]();
       int sub_index = 0;
       for(int i = 0; i < num_ranks; i++) {
-        for(std::map<std::string, int64_t>::iterator iter = bucket[i].begin(); iter != bucket[i].end(); ++iter) {
+        for(std::map<std::string, int>::iterator iter = bucket[i].begin(); iter != bucket[i].end(); ++iter) {
           KeyValue val;
           strcpy(val.word, iter->first.c_str());
           val.count = iter->second;
@@ -188,6 +188,11 @@ int main(int argc, char *argv[])
       // std::cout << "SLAVE " << rank << " will get " << size_tot << "\n";
 
       KeyValue *r_keyvalues = new KeyValue[size_tot]();
+      // std::cout << "********\n";
+      // std::cout << "SLAVE " << rank << " will send " << num_keyvalues_tot << " values in total.\n";
+      // std::cout << "SLAVE " << rank << " will receive " << size_tot << " values in total.\n";
+      // std::cout << "********\n";
+
 
       MPI_Alltoallv(s_keyvalues, s_redistr_sizes, s_redistr_displs,
         MPI_KeyValue, r_keyvalues, r_redistr_sizes, r_redistr_displs,
@@ -215,7 +220,7 @@ int main(int argc, char *argv[])
     }
     // else {
     //   for(int i = 0; i < num_ranks; i++) {
-    //     for(std::map<std::string, int64_t>::iterator iter = bucket[i].begin(); iter != bucket[i].end(); ++iter) {
+    //     for(std::map<std::string, int>::iterator iter = bucket[i].begin(); iter != bucket[i].end(); ++iter) {
     //         printf("[Slave %d] asdsad asd ", rank);
     //         std::cout << " Word " << iter->first << ", Count " <<iter->second << "\n";
     //     }
@@ -229,17 +234,17 @@ int main(int argc, char *argv[])
 
 int calculateDestRank(char *word, int length, int num_ranks)
 {
-    uint64_t hash = 0;
+    uint hash = 0;
 
-    for (uint64_t i = 0; i < length; i++)
+    for (uint i = 0; i < length; i++)
     {
-        uint64_t num_char = (uint64_t)word[i];
-        uint64_t seed     = (uint64_t)word_seed_num[(i % SEED_LENGTH)];
+        uint num_char = (uint)word[i];
+        uint seed     = (uint)word_seed_num[(i % SEED_LENGTH)];
 
         hash += num_char * seed * (i + 1);
     }
 
-    return (int)(hash % (uint64_t)num_ranks);
+    return (int)(hash % (uint)num_ranks);
 }
 
 /** Set parameters using flags
@@ -267,7 +272,6 @@ int processFlags(int argc, char *argv[]) {
     return 1;
 }
 
-
 int Map(char* buf, int len, KeyValue *pair, int *offset, int *word_len) {
   //Eat up all the numbers in the front
   while(!isalpha(buf[*offset]) && !isdigit(buf[*offset])) {
@@ -277,12 +281,14 @@ int Map(char* buf, int len, KeyValue *pair, int *offset, int *word_len) {
   int offset_start = *offset;
   int max_word_len = 15;
 
+   if(*offset >= TASK_SIZE) return -1;
+
   if(isalpha(buf[*offset])) {
     while(isalpha(buf[*offset])) {
       pair->word[*word_len] = buf[*offset];
       ++*word_len;
       ++*offset;
-      if(*word_len > max_word_len - 1) {
+      if(*word_len > max_word_len - 1  || *offset >= TASK_SIZE) {
         break;
       }
     }
@@ -292,13 +298,13 @@ int Map(char* buf, int len, KeyValue *pair, int *offset, int *word_len) {
       pair->word[*word_len] = buf[*offset];
       ++*word_len;
       ++*offset;
-      if(*word_len > max_word_len - 1) {
+      if(*word_len > max_word_len - 1 || *offset >= TASK_SIZE) {
         break;
       }
     }
   }
 
-  if(*word_len == 0 || *offset >= TASK_SIZE) return -1;
+  if(*word_len == 0) return -1;
 
   pair->count = 1;
 
